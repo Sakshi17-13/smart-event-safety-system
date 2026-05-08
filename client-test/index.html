@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Socket.io SOS Test Client</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 24px;
+        max-width: 720px;
+      }
+
+      h1 {
+        margin-bottom: 12px;
+      }
+
+      button {
+        background: #d32f2f;
+        color: #fff;
+        border: none;
+        padding: 10px 16px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #b71c1c;
+      }
+
+      #status {
+        margin: 12px 0;
+        color: #444;
+      }
+
+      #alerts {
+        margin-top: 16px;
+        padding-left: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SOS Alert Test Client</h1>
+    <button id="sendSosBtn">Send SOS</button>
+    <p id="geofenceInfo"></p>
+    <p id="status">Connecting...</p>
+
+    <h2>Received Alerts</h2>
+    <ul id="alerts"></ul>
+
+    <script src="http://localhost:5000/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io("http://localhost:5000");
+      const sendSosBtn = document.getElementById("sendSosBtn");
+      const statusText = document.getElementById("status");
+      const geofenceInfo = document.getElementById("geofenceInfo");
+      const alertsList = document.getElementById("alerts");
+      const SAFE_RADIUS_METERS = 500;
+      let safeZoneCenter = null;
+      let geofenceWatchId = null;
+      let isOutsideSafeZone = false;
+      let latestLocationName = null;
+
+      function getGeolocationErrorMessage(error) {
+        if (!error) return "Failed to get location.";
+
+        if (error.code === error.PERMISSION_DENIED || error.code === 1) {
+          return "Location permission denied. Please allow location access and try again.";
+        }
+
+        if (error.code === error.POSITION_UNAVAILABLE || error.code === 2) {
+          return "Unable to determine location. Please check GPS/network and try again.";
+        }
+
+        if (error.code === error.TIMEOUT || error.code === 3) {
+          return "Location request timed out. Please try again.";
+        }
+
+        return error.message || "Failed to get location.";
+      }
+
+      async function getLocationName(latitude, longitude) {
+        try {
+          const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`;
+          const response = await fetch(url, {
+            headers: { Accept: "application/json" }
+          });
+          if (!response.ok) return null;
+
+          const data = await response.json();
+          return data?.display_name || data?.name || null;
+        } catch (error) {
+          return null;
+        }
+      }
+
+      function getCurrentPosition() {
+        return new Promise((resolve, reject) => {
+          if (!navigator.geolocation) {
+            reject(new Error("Geolocation is not supported by this browser."));
+            return;
+          }
+
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+      }
+
+      function distanceInMeters(lat1, lon1, lat2, lon2) {
+        const toRad = (value) => (value * Math.PI) / 180;
+        const earthRadius = 6371000;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(toRad(lat1)) *
+            Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) *
+            Math.sin(dLon / 2);
+
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return earthRadius * c;
+      }
+
+      function updateGeofenceInfo(currentDistance = 0) {
+        if (!safeZoneCenter) {
+          geofenceInfo.textContent = "Geofence not initialized.";
+          return;
+        }
+
+        geofenceInfo.textContent =
+          `Safe radius: ${SAFE_RADIUS_METERS}m | Distance from safe center: ${Math.round(currentDistance)}m`;
+      }
+
+      async function emitGeofenceWarning(latitude, longitude) {
+        const locationName = (await getLocationName(latitude, longitude)) || latestLocationName;
+        const warningPayload = {
+          message: "Geofence warning: user exited safe zone",
+          username: "test-user",
+          timestamp: new Date().toISOString(),
+          latitude,
+          longitude,
+          location: locationName || `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
+          status: "Warning",
+          alertType: "GEOFENCE_WARNING",
+          safeRadiusMeters: SAFE_RADIUS_METERS,
+          safeCenterLatitude: safeZoneCenter.latitude,
+          safeCenterLongitude: safeZoneCenter.longitude
+        };
+
+        socket.emit("sos-alert", warningPayload);
+      }
+
+      function startGeofenceWatch() {
+        if (!navigator.geolocation || geofenceWatchId !== null || !safeZoneCenter) return;
+
+        geofenceWatchId = navigator.geolocation.watchPosition(
+          async (position) => {
+            const latitude = position.coords.latitude;
+            const longitude = position.coords.longitude;
+            const distance = distanceInMeters(
+              safeZoneCenter.latitude,
+              safeZoneCenter.longitude,
+              latitude,
+              longitude
+            );
+
+            updateGeofenceInfo(distance);
+
+            const currentlyOutside = distance > SAFE_RADIUS_METERS;
+            if (currentlyOutside && !isOutsideSafeZone) {
+              isOutsideSafeZone = true;
+              await emitGeofenceWarning(latitude, longitude);
+              statusText.textContent =
+                "Geofence warning triggered: user exited safe radius.";
+            } else if (!currentlyOutside) {
+              isOutsideSafeZone = false;
+            }
+          },
+          (error) => {
+            statusText.textContent = getGeolocationErrorMessage(error);
+          },
+          {
+            enableHighAccuracy: true,
+            maximumAge: 0,
+            timeout: 10000
+          }
+        );
+      }
+
+      socket.on("connect", () => {
+        statusText.textContent = `Connected: ${socket.id}`;
+      });
+
+      socket.on("disconnect", () => {
+        statusText.textContent = "Disconnected from server";
+      });
+
+      sendSosBtn.addEventListener("click", async () => {
+        sendSosBtn.disabled = true;
+        statusText.textContent = "Getting your location...";
+
+        try {
+          const position = await getCurrentPosition();
+          const latitude = position.coords.latitude;
+          const longitude = position.coords.longitude;
+          const locationName = await getLocationName(latitude, longitude);
+          latestLocationName = locationName;
+          safeZoneCenter = { latitude, longitude };
+          updateGeofenceInfo(0);
+
+          const alertPayload = {
+            message: "SOS triggered from test client",
+            username: "test-user",
+            timestamp: new Date().toISOString(),
+            latitude,
+            longitude,
+            location: locationName || `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
+            status: "Active",
+            alertType: "SOS",
+            safeRadiusMeters: SAFE_RADIUS_METERS,
+            safeCenterLatitude: latitude,
+            safeCenterLongitude: longitude
+          };
+
+          socket.emit("sos-alert", alertPayload);
+          startGeofenceWatch();
+          statusText.textContent =
+            "SOS alert sent successfully. Geofence monitoring is active.";
+        } catch (error) {
+          statusText.textContent = getGeolocationErrorMessage(error);
+        } finally {
+          sendSosBtn.disabled = false;
+        }
+      });
+
+      socket.on("new-alert", (alert) => {
+        const item = document.createElement("li");
+        item.textContent = `${alert.timestamp || new Date().toISOString()} - ${alert.message || "SOS Alert"} (${alert.location || "unknown"}) [${Number(alert.latitude ?? 0).toFixed(5)}, ${Number(alert.longitude ?? 0).toFixed(5)}]`;
+        alertsList.prepend(item);
+      });
+    </script>
+  </body>
+</html>
