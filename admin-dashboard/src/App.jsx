@@ -13,7 +13,9 @@ import {
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
-const socket = io(import.meta.env.VITE_SOCKET_URL);
+const socket = io("https://smart-event-safety-system.onrender.com", {
+  transports: ["websocket"],
+});
 const defaultCenter = [20.5937, 78.9629];
 
 const markerIcon = new L.Icon({
