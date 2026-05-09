@@ -13,7 +13,7 @@ import {
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
-const socket = io("http://localhost:5000");
+const socket = io("https://smart-event-safety-system.onrender.com/");
 
 const defaultCenter = [20.5937, 78.9629];
 
