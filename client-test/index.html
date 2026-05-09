@@ -50,7 +50,9 @@
 
     <script src="http://localhost:5000/socket.io/socket.io.js"></script>
     <script>
-      const socket = io("http://localhost:5000");
+      const socket = io("https://smart-event-safety-system.onrender.com", {
+         transports: ["websocket"],
+      });      
       const sendSosBtn = document.getElementById("sendSosBtn");
       const statusText = document.getElementById("status");
       const geofenceInfo = document.getElementById("geofenceInfo");
